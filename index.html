@@ -335,7 +335,9 @@ async function runDiagnostics(){
       try{
         const res = await fetch(t.url, { cache:'no-store' });
         const text = await res.text();
-        lines.push((res.ok && text.length > 5 ? '✔ ' : '✘ HTTP'+res.status+' ') + t.name);
+        const looksOk = res.ok && text.length > 5 && !/exceeded|limit|subscribe|premium/i.test(text);
+        lines.push((looksOk ? '✔ ' : '✘ HTTP'+res.status+' ') + t.name);
+        lines.push('   內容片段：' + text.slice(0,120).replace(/\s+/g,' '));
       }catch(e){
         lines.push('✘ ' + t.name + '（' + e.message + '）');
       }
@@ -483,10 +485,10 @@ async function runAnalysis(){
     const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&i=d`;
     const text = await fetchText(url);
     if(text.includes('No data') || text.trim().length < 20){
-      throw new Error('查無此股號的資料，請確認代號是否正確');
+      throw new Error('查無此股號的資料，請確認代號是否正確。原始回應片段：「' + text.slice(0,150).replace(/\s+/g,' ') + '」');
     }
     const rows = parseCSV(text);
-    if(rows.length < 30) throw new Error('歷史資料不足，暫無法計算完整指標');
+    if(rows.length < 30) throw new Error('歷史資料不足（僅取得 ' + rows.length + ' 筆），暫無法計算完整指標。原始回應片段：「' + text.slice(0,200).replace(/\s+/g,' ') + '」');
 
     const recent = rows.slice(-260);
     const closes = recent.map(r=>r.close);
