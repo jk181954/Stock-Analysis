@@ -85,6 +85,14 @@
   .quick button:hover{ border-color: var(--amber-dim); color: var(--amber); }
   .quick button:disabled{ opacity:.4; cursor:default; }
 
+  .proxy-setup{ max-width: 560px; margin: 18px auto 0; }
+  .proxy-row{ display:flex; align-items:center; gap:8px; background: var(--panel); border:1px solid var(--hairline); border-radius: 8px; padding: 4px; }
+  .proxy-row input{ flex:1; background: transparent; border:none; outline:none; color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:13px; padding: 8px 4px; }
+  .proxy-row button{ background: var(--panel-2); border:1px solid var(--hairline); color: var(--text); font-family:'IBM Plex Mono',monospace; font-size:12px; padding: 8px 14px; border-radius:6px; cursor:pointer; white-space:nowrap; }
+  .proxy-row button:hover{ border-color: var(--amber-dim); color: var(--amber); }
+  .proxy-hint{ font-size:11.5px; color:#5C6773; margin-top:6px; line-height:1.6; text-align:center; }
+  .proxy-hint.ok{ color: var(--up); }
+
   #status{ text-align:center; color: var(--text-dim); font-family:'IBM Plex Mono',monospace; font-size:13px; margin-top:22px; min-height: 18px; white-space:pre-wrap; }
   #status.err{ color: var(--down); }
   #diag{ text-align:center; margin-top:6px; }
@@ -155,6 +163,14 @@
       <button id="goBtn">分析</button>
     </div>
     <div class="quick" id="quickRow"></div>
+    <div id="proxySetup" class="proxy-setup">
+      <div class="proxy-row">
+        <span class="prompt" style="padding-left:0;">代理網址</span>
+        <input id="proxyInput" type="text" placeholder="例如 https://your-worker.your-name.workers.dev" autocomplete="off" spellcheck="false">
+        <button id="proxySaveBtn">儲存</button>
+      </div>
+      <div class="proxy-hint">首次使用請先部署 Cloudflare Worker（見 README），把取得的網址貼在這裡並儲存，設定會存在你的瀏覽器裡。</div>
+    </div>
     <div id="status"></div>
     <div id="diag"><a id="diagLink">連線診斷</a></div>
   </header>
@@ -233,6 +249,29 @@ input.addEventListener('keydown', e=>{ if(e.key === 'Enter') runAnalysis(); });
 goBtn.addEventListener('click', runAnalysis);
 document.getElementById('diagLink').addEventListener('click', runDiagnostics);
 
+const PROXY_KEY = 'stock_analysis_proxy_base';
+const proxyInput = document.getElementById('proxyInput');
+const proxySetup = document.getElementById('proxySetup');
+document.getElementById('proxySaveBtn').addEventListener('click', ()=>{
+  const v = proxyInput.value.trim().replace(/\/$/, '');
+  if(v){ localStorage.setItem(PROXY_KEY, v); refreshProxyHint('已儲存，可以開始分析了', true); }
+});
+function getProxyBase(){
+  try{ return localStorage.getItem(PROXY_KEY) || ''; }catch(e){ return ''; }
+}
+function refreshProxyHint(msg, ok){
+  const hint = proxySetup.querySelector('.proxy-hint');
+  hint.textContent = msg;
+  hint.className = 'proxy-hint' + (ok ? ' ok' : '');
+}
+(function initProxyUI(){
+  const saved = getProxyBase();
+  if(saved){
+    proxyInput.value = saved;
+    refreshProxyHint('目前使用的代理：' + saved, true);
+  }
+})();
+
 function detectSymbol(raw){
   let s = raw.trim();
   if(/^\d{4,6}$/.test(s)) return { symbol: s + '.tw', market: 'TW', display: s };
@@ -243,11 +282,15 @@ function detectSymbol(raw){
   return { symbol: s.toLowerCase() + '.us', market: 'US', display: s.toUpperCase() };
 }
 
-// 部分公開資料源不一定對所有來源（尤其 file:// 這種本機開啟方式）開放跨網域讀取。
-// 正式架站在 https 網域（例如 GitHub Pages）後，多數資料源應可直連；
-// 這裡仍保留「直連失敗才改走公開跨網域代理」的容錯機制以增加穩定度。
+// stooq.com 與 TWSE OpenAPI 都已確認完全不支援瀏覽器跨網域讀取（無 CORS 標頭），
+// 因此改用自架的 Cloudflare Worker 代理（伺服器對伺服器沒有 CORS 限制），
+// 公開跨網域代理僅作最後備援，實務上不保證可用。
 const CORS_PROXIES = [
-  url => url,
+  url => {
+    const base = getProxyBase();
+    if(!base) throw new Error('__NO_PROXY__');
+    return base + '/?url=' + encodeURIComponent(url);
+  },
   url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
   url => 'https://corsproxy.io/?url=' + encodeURIComponent(url),
 ];
@@ -256,14 +299,20 @@ async function fetchText(url){
   let lastErr;
   for(const wrap of CORS_PROXIES){
     try{
-      const res = await fetch(wrap(url), { cache: 'no-store' });
+      const wrapped = wrap(url);
+      const res = await fetch(wrapped, { cache: 'no-store' });
       if(!res.ok) throw new Error('HTTP ' + res.status);
       const text = await res.text();
       if(!text || text.trim().length < 5) throw new Error('空回應');
       return text;
-    }catch(e){ lastErr = e; }
+    }catch(e){
+      if(e.message === '__NO_PROXY__'){
+        throw new Error('尚未設定代理網址，請先在上方輸入 Cloudflare Worker 網址並儲存（見 README 部署步驟）');
+      }
+      lastErr = e;
+    }
   }
-  throw new Error('資料來源暫時無法連線（已嘗試直連與備援線路）：' + (lastErr ? lastErr.message : '未知錯誤'));
+  throw new Error('資料來源暫時無法連線（已嘗試代理與備援線路）：' + (lastErr ? lastErr.message : '未知錯誤'));
 }
 
 async function fetchJSON(url){
@@ -273,21 +322,27 @@ async function fetchJSON(url){
 
 async function runDiagnostics(){
   setStatus('正在執行連線診斷...');
-  const tests = [
-    { name: 'stooq.com（股價，直連）', url: 'https://stooq.com/q/d/l/?s=aapl.us&i=d', wrap: u=>u },
-    { name: 'stooq.com（股價，代理備援）', url: 'https://stooq.com/q/d/l/?s=aapl.us&i=d', wrap: CORS_PROXIES[1] },
-    { name: 'TWSE OpenAPI（基本面，直連）', url: 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L', wrap: u=>u },
-  ];
+  const base = getProxyBase();
   const lines = [];
-  for(const t of tests){
-    try{
-      const res = await fetch(t.wrap(t.url), { cache:'no-store' });
-      lines.push((res.ok ? '✔ ' : '✘ HTTP'+res.status+' ') + t.name);
-    }catch(e){
-      lines.push('✘ ' + t.name + '（' + e.message + '）');
+  if(!base){
+    lines.push('✘ 尚未設定代理網址，請先在上方欄位輸入並儲存');
+  } else {
+    const tests = [
+      { name: '代理 → stooq.com（股價）', url: base + '/?url=' + encodeURIComponent('https://stooq.com/q/d/l/?s=aapl.us&i=d') },
+      { name: '代理 → TWSE OpenAPI（基本面）', url: base + '/?url=' + encodeURIComponent('https://openapi.twse.com.tw/v1/opendata/t187ap03_L') },
+    ];
+    for(const t of tests){
+      try{
+        const res = await fetch(t.url, { cache:'no-store' });
+        const text = await res.text();
+        lines.push((res.ok && text.length > 5 ? '✔ ' : '✘ HTTP'+res.status+' ') + t.name);
+      }catch(e){
+        lines.push('✘ ' + t.name + '（' + e.message + '）');
+      }
     }
   }
   lines.push('目前頁面來源(origin)：' + window.location.origin);
+  lines.push('目前設定的代理網址：' + (base || '（未設定）'));
   setStatus(lines.join('\n'));
 }
 
