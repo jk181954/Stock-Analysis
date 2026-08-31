@@ -211,12 +211,12 @@
       <div class="brief-title"><span class="tag">分析摘要</span><h2>重點解讀</h2></div>
       <div id="briefBody"></div>
       <div class="disclaimer">
-        本摘要由程式依歷史股價數據自動計算生成（資料來源：stooq.com；台股基本面：證交所 OpenAPI），僅為客觀數值描述，不構成投資建議。股價資料可能有延遲或缺漏，正式決策前請自行查證原始資料來源。
+        本摘要由程式依歷史股價數據自動計算生成（資料來源：Yahoo Finance；台股基本面：證交所 OpenAPI），僅為客觀數值描述，不構成投資建議。股價資料可能有延遲或缺漏，正式決策前請自行查證原始資料來源。
       </div>
     </div>
   </section>
 
-  <footer>DATA: STOOQ.COM · TWSE OPENAPI · 僅供參考，不構成投資建議</footer>
+  <footer>DATA: YAHOO FINANCE · TWSE OPENAPI · 僅供參考，不構成投資建議</footer>
 </div>
 
 <script>
@@ -250,6 +250,7 @@ goBtn.addEventListener('click', runAnalysis);
 document.getElementById('diagLink').addEventListener('click', runDiagnostics);
 
 const PROXY_KEY = 'stock_analysis_proxy_base';
+const DEFAULT_PROXY_BASE = 'https://stock-proxy.jk181954.workers.dev';
 const proxyInput = document.getElementById('proxyInput');
 const proxySetup = document.getElementById('proxySetup');
 document.getElementById('proxySaveBtn').addEventListener('click', ()=>{
@@ -257,7 +258,7 @@ document.getElementById('proxySaveBtn').addEventListener('click', ()=>{
   if(v){ localStorage.setItem(PROXY_KEY, v); refreshProxyHint('已儲存，可以開始分析了', true); }
 });
 function getProxyBase(){
-  try{ return localStorage.getItem(PROXY_KEY) || ''; }catch(e){ return ''; }
+  try{ return localStorage.getItem(PROXY_KEY) || DEFAULT_PROXY_BASE; }catch(e){ return DEFAULT_PROXY_BASE; }
 }
 function refreshProxyHint(msg, ok){
   const hint = proxySetup.querySelector('.proxy-hint');
@@ -266,24 +267,23 @@ function refreshProxyHint(msg, ok){
 }
 (function initProxyUI(){
   const saved = getProxyBase();
-  if(saved){
-    proxyInput.value = saved;
-    refreshProxyHint('目前使用的代理：' + saved, true);
-  }
+  proxyInput.value = saved;
+  refreshProxyHint(localStorage.getItem(PROXY_KEY) ? ('目前使用的代理：' + saved) : ('使用預設代理：' + saved + '（可自行更換並儲存）'), true);
 })();
 
 function detectSymbol(raw){
   let s = raw.trim();
-  if(/^\d{4,6}$/.test(s)) return { symbol: s + '.tw', market: 'TW', display: s };
-  if(/\.(tw|us)$/i.test(s)) {
+  if(/^\d{4,6}$/.test(s)) return { symbol: s + '.TW', market: 'TW', display: s };
+  if(/\.tw$/i.test(s)) {
     const base = s.split('.')[0].toUpperCase();
-    return { symbol: s.toLowerCase(), market: /\.tw$/i.test(s) ? 'TW' : 'US', display: base };
+    return { symbol: base + '.TW', market: 'TW', display: base };
   }
-  return { symbol: s.toLowerCase() + '.us', market: 'US', display: s.toUpperCase() };
+  return { symbol: s.toUpperCase(), market: 'US', display: s.toUpperCase() };
 }
 
-// stooq.com 與 TWSE OpenAPI 都已確認完全不支援瀏覽器跨網域讀取（無 CORS 標頭），
-// 因此改用自架的 Cloudflare Worker 代理（伺服器對伺服器沒有 CORS 限制），
+// stooq.com 已確認會對非瀏覽器請求（含伺服器代理）要求 JavaScript 人機驗證，無法用於自動化抓取，
+// 改用 Yahoo Finance 公開股價 API；TWSE OpenAPI 則確認不支援瀏覽器跨網域讀取（無 CORS 標頭）。
+// 兩者都改由自架的 Cloudflare Worker 代理（伺服器對伺服器沒有 CORS 限制）存取，
 // 公開跨網域代理僅作最後備援，實務上不保證可用。
 const CORS_PROXIES = [
   url => {
@@ -328,14 +328,14 @@ async function runDiagnostics(){
     lines.push('✘ 尚未設定代理網址，請先在上方欄位輸入並儲存');
   } else {
     const tests = [
-      { name: '代理 → stooq.com（股價）', url: base + '/?url=' + encodeURIComponent('https://stooq.com/q/d/l/?s=aapl.us&i=d') },
+      { name: '代理 → Yahoo Finance（股價）', url: base + '/?url=' + encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=1mo') },
       { name: '代理 → TWSE OpenAPI（基本面）', url: base + '/?url=' + encodeURIComponent('https://openapi.twse.com.tw/v1/opendata/t187ap03_L') },
     ];
     for(const t of tests){
       try{
         const res = await fetch(t.url, { cache:'no-store' });
         const text = await res.text();
-        const looksOk = res.ok && text.length > 5 && !/exceeded|limit|subscribe|premium/i.test(text);
+        const looksOk = res.ok && text.length > 5 && !/verify your browser|noscript|captcha/i.test(text);
         lines.push((looksOk ? '✔ ' : '✘ HTTP'+res.status+' ') + t.name);
         lines.push('   內容片段：' + text.slice(0,120).replace(/\s+/g,' '));
       }catch(e){
@@ -348,15 +348,24 @@ async function runDiagnostics(){
   setStatus(lines.join('\n'));
 }
 
-function parseCSV(text){
-  const lines = text.trim().split('\n');
-  if(lines.length < 2) return [];
-  const rows = lines.slice(1).map(l=>{
-    const [date, open, high, low, close, volume] = l.split(',');
-    return { date, open:+open, high:+high, low:+low, close:+close, volume:+volume };
-  }).filter(r => r.date && !isNaN(r.close));
-  rows.sort((a,b)=> a.date < b.date ? -1 : 1);
-  return rows;
+function parseYahooChart(json){
+  const result = json && json.chart && json.chart.result && json.chart.result[0];
+  if(!result){
+    const errDesc = json && json.chart && json.chart.error && json.chart.error.description;
+    throw new Error(errDesc || '查無此股號的資料，請確認代號是否正確');
+  }
+  const meta = result.meta || {};
+  const timestamps = result.timestamp || [];
+  const quote = (result.indicators && result.indicators.quote && result.indicators.quote[0]) || {};
+  const closes = quote.close || [];
+  const rows = [];
+  for(let i=0;i<timestamps.length;i++){
+    const c = closes[i];
+    if(c === null || c === undefined || isNaN(c)) continue;
+    const dateStr = new Date(timestamps[i]*1000).toISOString().slice(0,10);
+    rows.push({ date: dateStr, close: c });
+  }
+  return { rows, meta };
 }
 
 function mean(arr){ return arr.reduce((a,b)=>a+b,0) / arr.length; }
@@ -482,40 +491,42 @@ async function runAnalysis(){
   resultEl.style.display = 'none';
 
   try{
-    const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&i=d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
     const text = await fetchText(url);
-    if(text.includes('No data') || text.trim().length < 20){
-      throw new Error('查無此股號的資料，請確認代號是否正確。原始回應片段：「' + text.slice(0,150).replace(/\s+/g,' ') + '」');
+    let json;
+    try{ json = JSON.parse(text); }catch(e){
+      throw new Error('資料格式無法解析，原始回應片段：「' + text.slice(0,150).replace(/\s+/g,' ') + '」');
     }
-    const rows = parseCSV(text);
-    if(rows.length < 30) throw new Error('歷史資料不足（僅取得 ' + rows.length + ' 筆），暫無法計算完整指標。原始回應片段：「' + text.slice(0,200).replace(/\s+/g,' ') + '」');
+    const { rows, meta } = parseYahooChart(json);
+    if(rows.length < 30) throw new Error('歷史資料不足（僅取得 ' + rows.length + ' 筆），暫無法計算完整指標');
 
-    const recent = rows.slice(-260);
-    const closes = recent.map(r=>r.close);
-    const latest = recent[recent.length-1];
-    const prev = recent[recent.length-2];
-    const dayChg = ((latest.close - prev.close) / prev.close) * 100;
+    const closes = rows.map(r=>r.close);
+    const lastRow = rows[rows.length-1];
+    const currentPrice = (meta.regularMarketPrice !== undefined && meta.regularMarketPrice !== null) ? meta.regularMarketPrice : lastRow.close;
+    const previousClose = (meta.previousClose !== undefined && meta.previousClose !== null) ? meta.previousClose : rows[rows.length-2].close;
+    const dayChg = ((currentPrice - previousClose) / previousClose) * 100;
+    const asOfDate = meta.regularMarketTime ? new Date(meta.regularMarketTime*1000).toISOString().slice(0,10) : lastRow.date;
 
     const ma20 = ma(closes, 20, closes.length-1);
     const ma60 = ma(closes, 60, closes.length-1);
     const ma20prev5 = closes.length >= 25 ? ma(closes, 20, closes.length-6) : null;
     const ma60prev5 = closes.length >= 65 ? ma(closes, 60, closes.length-6) : null;
     const rsi14 = rsi(closes, 14);
-    const hi52 = Math.max(...closes);
-    const lo52 = Math.min(...closes);
+    const hi52 = (meta.fiftyTwoWeekHigh !== undefined && meta.fiftyTwoWeekHigh !== null) ? meta.fiftyTwoWeekHigh : Math.max(...closes);
+    const lo52 = (meta.fiftyTwoWeekLow !== undefined && meta.fiftyTwoWeekLow !== null) ? meta.fiftyTwoWeekLow : Math.min(...closes);
     const vol = annualizedVol(closes.slice(-60));
-    const drawdownFromHigh = ((hi52 - latest.close) / hi52) * 100;
-    const upFromLow = ((latest.close - lo52) / lo52) * 100;
+    const drawdownFromHigh = ((hi52 - currentPrice) / hi52) * 100;
+    const upFromLow = ((currentPrice - lo52) / lo52) * 100;
 
     document.getElementById('stockName').textContent = display + (market==='TW' ? '（台股）' : '（美股）');
     document.getElementById('stockCode').textContent = symbol.toUpperCase();
-    document.getElementById('stockPrice').textContent = fmt(latest.close, market==='TW'?1:2);
+    document.getElementById('stockPrice').textContent = fmt(currentPrice, market==='TW'?1:2);
     const chgEl = document.getElementById('stockChg');
     chgEl.textContent = (dayChg>=0?'▲ +':'▼ ') + fmt(Math.abs(dayChg)) + '%';
     chgEl.className = 'chg mono ' + (dayChg>=0 ? 'up':'down');
-    document.getElementById('stockAsOf').textContent = '資料日期：' + latest.date;
+    document.getElementById('stockAsOf').textContent = '資料日期：' + asOfDate;
 
-    drawChart(recent, closes);
+    drawChart(rows, closes);
     renderStats({ma20, ma60, rsi14, hi52, lo52, vol, drawdownFromHigh, market});
 
     let fund = { profile: null, val: null };
@@ -528,7 +539,7 @@ async function runAnalysis(){
     const pe = pick(fund.val, ['PEratio','本益比']);
     const dy = pick(fund.val, ['DividendYield','殖利率(%)','殖利率']);
     const pb = pick(fund.val, ['PBratio','股價淨值比']);
-    renderBrief({latest, ma20, ma60, ma20prev5, ma60prev5, rsi14, vol, drawdownFromHigh, upFromLow, dayChg, market, pe, dy, pb});
+    renderBrief({latest: {close: currentPrice}, ma20, ma60, ma20prev5, ma60prev5, rsi14, vol, drawdownFromHigh, upFromLow, dayChg, market, pe, dy, pb});
 
     resultEl.style.display = 'block';
     setStatus('');
