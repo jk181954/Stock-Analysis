@@ -115,7 +115,8 @@
   .chg.down{ color: var(--down); background: rgba(255,107,91,0.1); }
   .asof{ color:#5C6773; font-size: 11px; margin-top:8px; font-family:'IBM Plex Mono',monospace;}
 
-  .chart-card canvas{ width:100%; height: 260px; display:block; }
+  .chart-card canvas{ width:100%; height: 280px; display:block; }
+  .chart-hint{ font-size: 11px; color: #5C6773; margin-bottom: 8px; }
   .legend{ display:flex; gap: 18px; margin-top: 10px; font-family:'IBM Plex Mono',monospace; font-size: 11.5px; color: var(--text-dim); }
   .legend .dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }
 
@@ -189,11 +190,13 @@
     </div>
 
     <div class="card chart-card">
-      <canvas id="priceChart" width="900" height="260"></canvas>
+      <div class="chart-hint mono">縱軸為相對期初漲跌幅（%），非絕對股價</div>
+      <canvas id="priceChart" width="900" height="280"></canvas>
       <div class="legend">
         <span><span class="dot" style="background:#E6EDF3"></span>收盤價</span>
         <span><span class="dot" style="background:#F0B429"></span>MA20</span>
         <span><span class="dot" style="background:#3D8BD6"></span>MA60</span>
+        <span id="benchmarkLegend" style="display:none;"><span class="dot" style="background:#B08BE0"></span><span id="benchmarkLegendLabel">大盤</span></span>
       </div>
     </div>
 
@@ -280,6 +283,11 @@ function detectSymbol(raw){
   }
   return { symbol: s.toUpperCase(), market: 'US', display: s.toUpperCase() };
 }
+
+const BENCHMARKS = {
+  TW: { symbol: '^TWII', label: '大盤（加權指數）' },
+  US: { symbol: '^GSPC', label: '大盤（S&P 500）' },
+};
 
 // stooq.com 已確認會對非瀏覽器請求（含伺服器代理）要求 JavaScript 人機驗證，無法用於自動化抓取，
 // 改用 Yahoo Finance 公開股價 API；TWSE OpenAPI 則確認不支援瀏覽器跨網域讀取（無 CORS 標頭）。
@@ -526,7 +534,34 @@ async function runAnalysis(){
     chgEl.className = 'chg mono ' + (dayChg>=0 ? 'up':'down');
     document.getElementById('stockAsOf').textContent = '資料日期：' + asOfDate;
 
-    drawChart(rows, closes);
+    let benchmarkAligned = null;
+    let benchmarkLabel = null;
+    try{
+      const bm = BENCHMARKS[market];
+      if(bm){
+        const bmUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(bm.symbol)}?interval=1d&range=1y`;
+        const bmText = await fetchText(bmUrl);
+        const bmJson = JSON.parse(bmText);
+        const { rows: bmRows } = parseYahooChart(bmJson);
+        const bmMap = new Map(bmRows.map(r => [r.date, r.close]));
+        let lastKnown = null;
+        benchmarkAligned = rows.map(r => {
+          if(bmMap.has(r.date)) lastKnown = bmMap.get(r.date);
+          return lastKnown;
+        });
+        // 開頭若無對應資料，往後找第一個可用值回填
+        const firstValid = benchmarkAligned.find(v => v !== null);
+        for(let i=0;i<benchmarkAligned.length;i++){
+          if(benchmarkAligned[i] === null) benchmarkAligned[i] = firstValid;
+          else break;
+        }
+        benchmarkLabel = bm.label;
+      }
+    }catch(e){
+      benchmarkAligned = null; // 大盤資料非必要，失敗就不畫，不影響主要分析
+    }
+
+    drawChart(rows, closes, benchmarkAligned, benchmarkLabel);
     renderStats({ma20, ma60, rsi14, hi52, lo52, vol, drawdownFromHigh, market});
 
     let fund = { profile: null, val: null };
@@ -632,34 +667,55 @@ function renderBrief({latest, ma20, ma60, ma20prev5, ma60prev5, rsi14, vol, draw
   `;
 }
 
-function drawChart(rows, closes){
+function drawChart(rows, closes, benchmarkCloses, benchmarkLabel){
   const canvas = document.getElementById('priceChart');
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || 900;
-  const cssH = 260;
+  const cssH = 280;
   canvas.width = cssW * dpr;
   canvas.height = cssH * dpr;
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,cssW,cssH);
 
-  const padL = 46, padR = 10, padT = 14, padB = 20;
+  const padL = 50, padR = 10, padT = 14, padB = 28;
   const plotW = cssW - padL - padR;
   const plotH = cssH - padT - padB;
 
   const ma20arr = closes.map((_,i)=> ma(closes,20,i));
   const ma60arr = closes.map((_,i)=> ma(closes,60,i));
 
-  const allVals = closes.concat(ma20arr.filter(v=>v!==null), ma60arr.filter(v=>v!==null));
+  // 全部換算成「相對期初收盤價的漲跌幅（%）」，個股與均線用同一個基準（closes[0]），
+  // 這是同一個常數縮放，不影響均線交叉判斷的相對關係；大盤指數則用自己的期初值換算，
+  // 這樣個股與大盤才能放在同一張圖比較走勢，不受絕對價位差異影響。
+  const base = closes[0];
+  const toPct = v => v===null || v===undefined ? null : (v/base - 1) * 100;
+  const closesPct = closes.map(toPct);
+  const ma20Pct = ma20arr.map(toPct);
+  const ma60Pct = ma60arr.map(toPct);
+
+  let benchmarkPct = null;
+  if(benchmarkCloses && benchmarkCloses.length === closes.length){
+    const bBase = benchmarkCloses.find(v => v !== null && v !== undefined);
+    if(bBase){
+      benchmarkPct = benchmarkCloses.map(v => v===null||v===undefined ? null : (v/bBase - 1) * 100);
+    }
+  }
+
+  const allVals = closesPct.concat(
+    ma20Pct.filter(v=>v!==null), ma60Pct.filter(v=>v!==null),
+    benchmarkPct ? benchmarkPct.filter(v=>v!==null) : []
+  );
   const vMax = Math.max(...allVals);
   const vMin = Math.min(...allVals);
-  const vPad = (vMax - vMin) * 0.08 || vMax*0.02;
+  const vPad = (vMax - vMin) * 0.08 || 1;
   const yMax = vMax + vPad, yMin = vMin - vPad;
 
   const n = closes.length;
   const x = i => padL + (i/(n-1)) * plotW;
   const y = v => padT + plotH - ((v - yMin)/(yMax - yMin)) * plotH;
 
+  // 橫向格線 + Y 軸（%）標籤
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   ctx.lineWidth = 1;
   for(let g=0; g<=3; g++){
@@ -671,10 +727,28 @@ function drawChart(rows, closes){
   ctx.textAlign = 'right';
   [yMax, (yMax+yMin)/2, yMin].forEach((v,idx)=>{
     const gy = padT + (plotH/2)*idx;
-    ctx.fillText(v.toFixed(1), padL-6, gy+3);
+    ctx.fillText((v>=0?'+':'') + v.toFixed(1) + '%', padL-6, gy+3);
   });
 
-  function drawLine(arr, color, width){
+  // 0% 基準線（期初水準），加粗一點方便對照漲跌
+  if(yMin < 0 && yMax > 0){
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(padL, y(0)); ctx.lineTo(cssW-padR, y(0)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // X 軸日期標籤：取頭、中、尾共 5 個點
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#5C6773';
+  const tickCount = Math.min(5, n);
+  for(let t=0; t<tickCount; t++){
+    const idx = Math.round((t/(tickCount-1)) * (n-1));
+    const dateStr = rows[idx].date.slice(2).replace(/-/g,'/'); // YY/MM/DD
+    ctx.fillText(dateStr, x(idx), cssH - 6);
+  }
+
+  function drawLine(arr, color, width, dashed){
     ctx.beginPath();
     let started = false;
     arr.forEach((v,i)=>{
@@ -685,11 +759,14 @@ function drawChart(rows, closes){
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     ctx.lineJoin = 'round';
+    if(dashed) ctx.setLineDash([5,3]); else ctx.setLineDash([]);
     ctx.stroke();
+    ctx.setLineDash([]);
   }
 
+  // 收盤價底下的漸層填色
   ctx.beginPath();
-  closes.forEach((v,i)=>{ const px=x(i), py=y(v); if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); });
+  closesPct.forEach((v,i)=>{ const px=x(i), py=y(v); if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); });
   ctx.lineTo(x(n-1), padT+plotH);
   ctx.lineTo(x(0), padT+plotH);
   ctx.closePath();
@@ -699,9 +776,18 @@ function drawChart(rows, closes){
   ctx.fillStyle = grad;
   ctx.fill();
 
-  drawLine(ma60arr, '#3D8BD6', 1.4);
-  drawLine(ma20arr, '#F0B429', 1.4);
-  drawLine(closes, '#E6EDF3', 1.8);
+  if(benchmarkPct) drawLine(benchmarkPct, '#B08BE0', 1.3, true);
+  drawLine(ma60Pct, '#3D8BD6', 1.4);
+  drawLine(ma20Pct, '#F0B429', 1.4);
+  drawLine(closesPct, '#E6EDF3', 1.8);
+
+  const legendEl = document.getElementById('benchmarkLegend');
+  if(benchmarkPct && benchmarkLabel){
+    legendEl.style.display = 'inline';
+    document.getElementById('benchmarkLegendLabel').textContent = benchmarkLabel;
+  } else {
+    legendEl.style.display = 'none';
+  }
 }
 </script>
 </body>
