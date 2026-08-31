@@ -499,13 +499,36 @@ async function runAnalysis(){
   resultEl.style.display = 'none';
 
   try{
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
-    const text = await fetchText(url);
-    let json;
-    try{ json = JSON.parse(text); }catch(e){
-      throw new Error('資料格式無法解析，原始回應片段：「' + text.slice(0,150).replace(/\s+/g,' ') + '」');
+    async function fetchYahooChart(sym){
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1y`;
+      const t = await fetchText(url);
+      let j;
+      try{ j = JSON.parse(t); }catch(e){
+        throw new Error('資料格式無法解析，原始回應片段：「' + t.slice(0,150).replace(/\s+/g,' ') + '」');
+      }
+      return parseYahooChart(j);
     }
-    const { rows, meta } = parseYahooChart(json);
+
+    let chartData;
+    let actualSymbol = symbol;
+    try{
+      chartData = await fetchYahooChart(symbol);
+    }catch(firstErr){
+      // 台股數字代號預設當作「上市」（.TW）查詢；查不到時很可能是「上櫃」股票，改用 .TWO 字尾再試一次。
+      if(market === 'TW' && symbol.endsWith('.TW') && !symbol.endsWith('.TWO')){
+        const altSymbol = display + '.TWO';
+        setStatus('讀取股價資料中 · ' + altSymbol + '（可能為上櫃股票）');
+        try{
+          chartData = await fetchYahooChart(altSymbol);
+          actualSymbol = altSymbol;
+        }catch(secondErr){
+          throw firstErr;
+        }
+      } else {
+        throw firstErr;
+      }
+    }
+    const { rows, meta } = chartData;
     if(rows.length < 30) throw new Error('歷史資料不足（僅取得 ' + rows.length + ' 筆），暫無法計算完整指標');
 
     const closes = rows.map(r=>r.close);
@@ -527,7 +550,7 @@ async function runAnalysis(){
     const upFromLow = ((currentPrice - lo52) / lo52) * 100;
 
     document.getElementById('stockName').textContent = display + (market==='TW' ? '（台股）' : '（美股）');
-    document.getElementById('stockCode').textContent = symbol.toUpperCase();
+    document.getElementById('stockCode').textContent = actualSymbol.toUpperCase();
     document.getElementById('stockPrice').textContent = fmt(currentPrice, market==='TW'?1:2);
     const chgEl = document.getElementById('stockChg');
     chgEl.textContent = (dayChg>=0?'▲ +':'▼ ') + fmt(Math.abs(dayChg)) + '%';
