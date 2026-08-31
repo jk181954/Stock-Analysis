@@ -337,7 +337,8 @@ async function runDiagnostics(){
   } else {
     const tests = [
       { name: '代理 → Yahoo Finance（股價）', url: base + '/?url=' + encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=1mo') },
-      { name: '代理 → TWSE OpenAPI（基本面）', url: base + '/?url=' + encodeURIComponent('https://openapi.twse.com.tw/v1/opendata/t187ap03_L') },
+      { name: '代理 → TWSE OpenAPI（上市基本面）', url: base + '/?url=' + encodeURIComponent('https://openapi.twse.com.tw/v1/opendata/t187ap03_L') },
+      { name: '代理 → TPEx OpenAPI（上櫃基本面）', url: base + '/?url=' + encodeURIComponent('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O') },
     ];
     for(const t of tests){
       try{
@@ -422,18 +423,28 @@ function fmtCapital(v){
   return n.toLocaleString() + ' 元';
 }
 
-async function fetchFundamentals(code){
+async function fetchFundamentals(code, isOTC){
+  const endpoints = isOTC
+    ? {
+        profile: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O',
+        val: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis',
+      }
+    : {
+        profile: 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L',
+        val: 'https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_d',
+      };
   try{
     const [profileRes, valRes] = await Promise.allSettled([
-      fetchJSON('https://openapi.twse.com.tw/v1/opendata/t187ap03_L'),
-      fetchJSON('https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_d')
+      fetchJSON(endpoints.profile),
+      fetchJSON(endpoints.val),
     ]);
     let profile = null, val = null;
+    const codeKeys = ['公司代號','Code','股票代號','SecuritiesCompanyCode','代號'];
     if(profileRes.status === 'fulfilled' && Array.isArray(profileRes.value)){
-      profile = profileRes.value.find(x => String(pick(x, ['公司代號','Code']) || '') === code) || null;
+      profile = profileRes.value.find(x => String(pick(x, codeKeys) || '') === code) || null;
     }
     if(valRes.status === 'fulfilled' && Array.isArray(valRes.value)){
-      val = valRes.value.find(x => String(pick(x, ['Code','公司代號']) || '') === code) || null;
+      val = valRes.value.find(x => String(pick(x, codeKeys) || '') === code) || null;
     }
     return { profile, val };
   }catch(e){
@@ -441,7 +452,7 @@ async function fetchFundamentals(code){
   }
 }
 
-function renderFundamentals(market, profile, val){
+function renderFundamentals(market, profile, val, isOTC){
   const card = document.getElementById('fundCard');
   const grid = document.getElementById('fundGrid');
   const note = document.getElementById('fundNote');
@@ -450,29 +461,31 @@ function renderFundamentals(market, profile, val){
   if(market !== 'TW'){
     grid.innerHTML = '';
     document.getElementById('fundTitle').textContent = '公司基本資料';
-    note.textContent = '此版本的基本面資料目前僅支援台股上市公司（資料來源：證交所 OpenAPI）。美股基本面資料多需付費 API 金鑰，尚未整合。';
+    note.textContent = '此版本的基本面資料目前僅支援台股（資料來源：證交所／櫃買中心 OpenAPI）。美股基本面資料多需付費 API 金鑰，尚未整合。';
     return;
   }
   if(!profile && !val){
     grid.innerHTML = '';
     document.getElementById('fundTitle').textContent = '公司基本資料';
-    note.textContent = '目前無法取得此股號的基本面資料，可能為上櫃／興櫃股票或代號有誤（本功能目前僅涵蓋證交所「上市」公司）。';
+    note.textContent = isOTC
+      ? '目前無法取得此股號的基本面資料，可能為興櫃股票或代號有誤（本功能目前涵蓋證交所「上市」與櫃買中心「上櫃」公司，不含興櫃）。'
+      : '目前無法取得此股號的基本面資料，可能為代號有誤。';
     return;
   }
 
-  const name = pick(profile, ['公司名稱','Name']);
-  const industry = pick(profile, ['產業別']);
-  const listed = pick(profile, ['上市日期']);
-  const capital = pick(profile, ['實收資本額']);
-  const chairman = pick(profile, ['董事長']);
-  const pe = pick(val, ['PEratio','本益比']);
+  const name = pick(profile, ['公司名稱','Name','股票名稱']);
+  const industry = pick(profile, ['產業別','Industry']);
+  const listed = pick(profile, ['上市日期','上櫃日期','ListingDate']);
+  const capital = pick(profile, ['實收資本額','Capital']);
+  const chairman = pick(profile, ['董事長','Chairman']);
+  const pe = pick(val, ['PEratio','PeRatio','本益比']);
   const dy = pick(val, ['DividendYield','殖利率(%)','殖利率']);
-  const pb = pick(val, ['PBratio','股價淨值比']);
+  const pb = pick(val, ['PBratio','PbRatio','股價淨值比']);
 
   const items = [];
   if(industry) items.push({ label:'產業別', value: industry });
   if(chairman) items.push({ label:'董事長', value: chairman });
-  if(listed) items.push({ label:'上市日期', value: listed });
+  if(listed) items.push({ label: isOTC ? '上櫃日期' : '上市日期', value: listed });
   if(capital) items.push({ label:'實收資本額', value: fmtCapital(capital) });
   if(pe) items.push({ label:'本益比 PE', value: pe + ' 倍' });
   if(dy) items.push({ label:'殖利率', value: dy + '%' });
@@ -486,7 +499,7 @@ function renderFundamentals(market, profile, val){
 
   document.getElementById('fundTitle').textContent = name || '公司基本資料';
   note.textContent = items.length
-    ? '資料來源：證交所 OpenAPI。本益比／殖利率／股價淨值比為最近交易日統計數值，僅作客觀描述，不代表估值高低的結論。'
+    ? ('資料來源：' + (isOTC ? '證券櫃檯買賣中心（TPEx）OpenAPI' : '證交所 OpenAPI') + '。本益比／殖利率／股價淨值比為最近交易日統計數值，僅作客觀描述，不代表估值高低的結論。')
     : '查無完整基本面欄位，可能因資料來源當日尚未更新。';
 }
 
@@ -588,15 +601,16 @@ async function runAnalysis(){
     renderStats({ma20, ma60, rsi14, hi52, lo52, vol, drawdownFromHigh, market});
 
     let fund = { profile: null, val: null };
+    const isOTC = actualSymbol.toUpperCase().endsWith('.TWO');
     if(market === 'TW'){
-      setStatus('讀取基本面資料中 · ' + symbol.toUpperCase());
-      fund = await fetchFundamentals(display);
+      setStatus('讀取基本面資料中 · ' + actualSymbol.toUpperCase());
+      fund = await fetchFundamentals(display, isOTC);
     }
-    renderFundamentals(market, fund.profile, fund.val);
+    renderFundamentals(market, fund.profile, fund.val, isOTC);
 
-    const pe = pick(fund.val, ['PEratio','本益比']);
+    const pe = pick(fund.val, ['PEratio','PeRatio','本益比']);
     const dy = pick(fund.val, ['DividendYield','殖利率(%)','殖利率']);
-    const pb = pick(fund.val, ['PBratio','股價淨值比']);
+    const pb = pick(fund.val, ['PBratio','PbRatio','股價淨值比']);
     renderBrief({latest: {close: currentPrice}, ma20, ma60, ma20prev5, ma60prev5, rsi14, vol, drawdownFromHigh, upFromLow, dayChg, market, pe, dy, pb});
 
     resultEl.style.display = 'block';
