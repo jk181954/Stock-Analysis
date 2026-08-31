@@ -604,7 +604,8 @@ async function runAnalysis(){
     const drawdownFromHigh = ((hi52 - currentPrice) / hi52) * 100;
     const upFromLow = ((currentPrice - lo52) / lo52) * 100;
 
-    document.getElementById('stockName').textContent = display + (market==='TW' ? '（台股）' : '（美股）');
+    const yahooName = meta.longName || meta.shortName || null;
+    document.getElementById('stockName').textContent = (market==='TW' ? display : (yahooName || display)) + (market==='TW' ? '（台股）' : '（美股）');
     document.getElementById('stockCode').textContent = actualSymbol.toUpperCase();
     document.getElementById('stockPrice').textContent = fmt(currentPrice, market==='TW'?1:2);
     const chgEl = document.getElementById('stockChg');
@@ -647,6 +648,10 @@ async function runAnalysis(){
     if(market === 'TW'){
       setStatus('讀取基本面資料中 · ' + actualSymbol.toUpperCase());
       fund = await fetchFundamentals(display, isOTC);
+    }
+    const companyName = pick(fund.profile, ['公司名稱','Name','股票名稱']);
+    if(market === 'TW' && companyName){
+      document.getElementById('stockName').textContent = companyName + '（台股）';
     }
     renderFundamentals(market, fund.profile, fund.val, isOTC);
 
