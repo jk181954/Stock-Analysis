@@ -126,7 +126,7 @@
   #priceChart{ cursor: grab; touch-action: none; }
   #priceChart.dragging{ cursor: grabbing; }
 
-  .chart-card canvas{ width:100%; height: 280px; display:block; }
+  .chart-card canvas{ width:100%; height: 340px; display:block; }
   .chart-hint{ font-size: 11px; color: #5C6773; }
   .legend{ display:flex; gap: 18px; margin-top: 10px; font-family:'IBM Plex Mono',monospace; font-size: 11.5px; color: var(--text-dim); }
   .legend .dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }
@@ -209,16 +209,19 @@
           <button id="zoomOutBtn" class="chart-mode-btn mono" title="縮小">－</button>
           <button id="zoomInBtn" class="chart-mode-btn mono" title="放大">＋</button>
           <button id="zoomResetBtn" class="chart-mode-btn mono">重置縮放</button>
-          <button id="chartModeBtn" class="chart-mode-btn mono">切換為 K線圖</button>
+          <button id="chartModeBtn" class="chart-mode-btn mono">切換為 折線圖</button>
         </div>
       </div>
-      <canvas id="priceChart" width="900" height="280"></canvas>
+      <canvas id="priceChart" width="900" height="340"></canvas>
       <div class="legend">
         <span id="closeLegend"><span class="dot" style="background:#E6EDF3"></span>收盤價</span>
         <span id="candleLegend" style="display:none;"><span class="dot" style="background:#3DD68C"></span>上漲／<span class="dot" style="background:#FF6B5B"></span>下跌</span>
         <span><span class="dot" style="background:#F0B429"></span>MA20</span>
         <span><span class="dot" style="background:#3D8BD6"></span>MA60</span>
+        <span><span class="dot" style="background:#38B2AC"></span>MA120</span>
+        <span><span class="dot" style="background:#E85D9C"></span>MA200</span>
         <span id="benchmarkLegend" style="display:none;"><span class="dot" style="background:#B08BE0"></span><span id="benchmarkLegendLabel">大盤</span></span>
+        <span><span class="dot" style="background:#5C6773"></span>成交量</span>
       </div>
     </div>
 
@@ -571,6 +574,7 @@ function parseYahooChart(json){
   const opens = quote.open || [];
   const highs = quote.high || [];
   const lows = quote.low || [];
+  const volumes = quote.volume || [];
   const rows = [];
   for(let i=0;i<timestamps.length;i++){
     const c = closes[i];
@@ -578,7 +582,8 @@ function parseYahooChart(json){
     const dateStr = new Date(timestamps[i]*1000).toISOString().slice(0,10);
     const o = opens[i], h = highs[i], l = lows[i];
     const hasOHLC = [o,h,l].every(v => v !== null && v !== undefined && !isNaN(v));
-    rows.push({ date: dateStr, close: c, open: hasOHLC ? o : c, high: hasOHLC ? h : c, low: hasOHLC ? l : c });
+    const v = volumes[i];
+    rows.push({ date: dateStr, close: c, open: hasOHLC ? o : c, high: hasOHLC ? h : c, low: hasOHLC ? l : c, volume: (v===null||v===undefined||isNaN(v)) ? 0 : v });
   }
   return { rows, meta };
 }
@@ -1096,7 +1101,7 @@ function renderBrief({latest, ma20, ma60, ma20prev5, ma60prev5, rsi14, vol, draw
 }
 
 let currentChartData = null;
-let chartMode = 'line';
+let chartMode = 'candle';
 
 function drawChart(rows, closes, benchmarkCloses, benchmarkLabel){
   currentChartData = { rows, closes, benchmarkCloses, benchmarkLabel, zStart: 0, zEnd: rows.length - 1 };
@@ -1116,26 +1121,34 @@ function renderChart(){
   const canvas = document.getElementById('priceChart');
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || 900;
-  const cssH = 280;
+  const cssH = 340;
   canvas.width = cssW * dpr;
   canvas.height = cssH * dpr;
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,cssW,cssH);
 
-  const padL = 50, padR = 10, padT = 14, padB = 28;
+  const padL = 50, padR = 10, padT = 14, padB = 24;
   const plotW = cssW - padL - padR;
-  const plotH = cssH - padT - padB;
+  const volH = 56, gapVol = 10;
+  const priceH = cssH - padT - padB - volH - gapVol;
+  const priceTop = padT;
+  const volTop = priceTop + priceH + gapVol;
+  const volBottom = volTop + volH;
 
-  // 均線用「全部歷史」計算，避免縮放到後段時 MA20/60 因為前面資料被切掉而失真，
+  // 均線用「全部歷史」計算，避免縮放到後段時均線因為前面資料被切掉而失真，
   // 算完才依縮放範圍切片，只顯示可視區間。
   const ma20arrFull = closes.map((_,i)=> ma(closes,20,i));
   const ma60arrFull = closes.map((_,i)=> ma(closes,60,i));
+  const ma120arrFull = closes.map((_,i)=> ma(closes,120,i));
+  const ma200arrFull = closes.map((_,i)=> ma(closes,200,i));
 
   const rowsView = rows.slice(zStart, zEnd + 1);
   const closesView = closes.slice(zStart, zEnd + 1);
   const ma20arr = ma20arrFull.slice(zStart, zEnd + 1);
   const ma60arr = ma60arrFull.slice(zStart, zEnd + 1);
+  const ma120arr = ma120arrFull.slice(zStart, zEnd + 1);
+  const ma200arr = ma200arrFull.slice(zStart, zEnd + 1);
   const benchmarkView = benchmarkCloses ? benchmarkCloses.slice(zStart, zEnd + 1) : null;
 
   // 全部換算成「相對可視區間期初收盤價的漲跌幅（%）」，個股與均線用同一個基準（closesView[0]），
@@ -1149,6 +1162,9 @@ function renderChart(){
   const lowsPct = rowsView.map(r => toPct(r.low));
   const ma20Pct = ma20arr.map(toPct);
   const ma60Pct = ma60arr.map(toPct);
+  const ma120Pct = ma120arr.map(toPct);
+  const ma200Pct = ma200arr.map(toPct);
+  const volumesView = rowsView.map(r => r.volume || 0);
 
   let benchmarkPct = null;
   if(benchmarkView && benchmarkView.length === closesView.length){
@@ -1158,10 +1174,10 @@ function renderChart(){
     }
   }
 
-
   const allVals = closesPct.concat(
     highsPct.filter(v=>v!==null), lowsPct.filter(v=>v!==null),
     ma20Pct.filter(v=>v!==null), ma60Pct.filter(v=>v!==null),
+    ma120Pct.filter(v=>v!==null), ma200Pct.filter(v=>v!==null),
     benchmarkPct ? benchmarkPct.filter(v=>v!==null) : []
   );
   const vMax = Math.max(...allVals);
@@ -1171,20 +1187,28 @@ function renderChart(){
 
   const n = closesView.length;
   const x = i => padL + (i/(n-1)) * plotW;
-  const y = v => padT + plotH - ((v - yMin)/(yMax - yMin)) * plotH;
+  const y = v => priceTop + priceH - ((v - yMin)/(yMax - yMin)) * priceH;
+  const maxVol = Math.max(...volumesView, 1);
+  const yVol = v => volBottom - (v/maxVol) * volH;
 
-  // 橫向格線 + Y 軸（%）標籤
+  function fmtVol(v){
+    if(v >= 1e8) return (v/1e8).toFixed(1) + '億';
+    if(v >= 1e4) return (v/1e4).toFixed(1) + '萬';
+    return Math.round(v).toLocaleString();
+  }
+
+  // 橫向格線 + Y 軸（%）標籤（股價區）
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   ctx.lineWidth = 1;
   for(let g=0; g<=3; g++){
-    const gy = padT + (plotH/3)*g;
+    const gy = priceTop + (priceH/3)*g;
     ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(cssW-padR, gy); ctx.stroke();
   }
   ctx.fillStyle = '#5C6773';
   ctx.font = '10px IBM Plex Mono, monospace';
   ctx.textAlign = 'right';
   [yMax, (yMax+yMin)/2, yMin].forEach((v,idx)=>{
-    const gy = padT + (plotH/2)*idx;
+    const gy = priceTop + (priceH/2)*idx;
     ctx.fillText((v>=0?'+':'') + v.toFixed(1) + '%', padL-6, gy+3);
   });
 
@@ -1195,6 +1219,13 @@ function renderChart(){
     ctx.beginPath(); ctx.moveTo(padL, y(0)); ctx.lineTo(cssW-padR, y(0)); ctx.stroke();
     ctx.setLineDash([]);
   }
+
+  // 成交量區：頂部標示最大量，底部隔線
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.beginPath(); ctx.moveTo(padL, volTop); ctx.lineTo(cssW-padR, volTop); ctx.stroke();
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#5C6773';
+  ctx.fillText(fmtVol(maxVol), padL-6, volTop+8);
 
   // X 軸日期標籤：取頭、中、尾共 5 個點
   ctx.textAlign = 'center';
@@ -1222,9 +1253,21 @@ function renderChart(){
     ctx.setLineDash([]);
   }
 
+  const slot = plotW / n;
+  const barW = Math.max(1.5, Math.min(10, slot * 0.62));
+
+  // 成交量柱狀圖：依當日漲跌上色
+  for(let i=0;i<n;i++){
+    const v = volumesView[i];
+    if(!v) continue;
+    const up = closesView[i] >= (rowsView[i].open !== undefined ? rowsView[i].open : closesView[i]);
+    ctx.fillStyle = up ? 'rgba(61,214,140,0.55)' : 'rgba(255,107,91,0.55)';
+    const px = x(i);
+    const barTop = yVol(v);
+    ctx.fillRect(px - barW/2, barTop, barW, volBottom - barTop);
+  }
+
   if(chartMode === 'candle'){
-    const slot = plotW / n;
-    const bodyW = Math.max(1.5, Math.min(10, slot * 0.62));
     for(let i=0;i<n;i++){
       const o = opensPct[i], h = highsPct[i], l = lowsPct[i], c = closesPct[i];
       if(o===null||h===null||l===null||c===null) continue;
@@ -1241,16 +1284,16 @@ function renderChart(){
       const yOpen = y(o), yClose = y(c);
       const top = Math.min(yOpen, yClose);
       const h2 = Math.max(1, Math.abs(yClose - yOpen));
-      ctx.fillRect(px - bodyW/2, top, bodyW, h2);
+      ctx.fillRect(px - barW/2, top, barW, h2);
     }
   } else {
     // 收盤價底下的漸層填色
     ctx.beginPath();
     closesPct.forEach((v,i)=>{ const px=x(i), py=y(v); if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); });
-    ctx.lineTo(x(n-1), padT+plotH);
-    ctx.lineTo(x(0), padT+plotH);
+    ctx.lineTo(x(n-1), priceTop+priceH);
+    ctx.lineTo(x(0), priceTop+priceH);
     ctx.closePath();
-    const grad = ctx.createLinearGradient(0,padT,0,padT+plotH);
+    const grad = ctx.createLinearGradient(0,priceTop,0,priceTop+priceH);
     grad.addColorStop(0, 'rgba(230,237,243,0.12)');
     grad.addColorStop(1, 'rgba(230,237,243,0)');
     ctx.fillStyle = grad;
@@ -1258,6 +1301,8 @@ function renderChart(){
   }
 
   if(benchmarkPct) drawLine(benchmarkPct, '#B08BE0', 1.3, true);
+  drawLine(ma200Pct, '#E85D9C', 1.2);
+  drawLine(ma120Pct, '#38B2AC', 1.2);
   drawLine(ma60Pct, '#3D8BD6', 1.4);
   drawLine(ma20Pct, '#F0B429', 1.4);
   if(chartMode !== 'candle') drawLine(closesPct, '#E6EDF3', 1.8);
