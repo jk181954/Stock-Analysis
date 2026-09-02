@@ -122,6 +122,9 @@
   .chart-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:10px; flex-wrap:wrap; }
   .chart-mode-btn{ background:none; border:1px solid var(--hairline); color:var(--text-dim); font-size:11.5px; padding:5px 11px; border-radius:16px; cursor:pointer; white-space:nowrap; }
   .chart-mode-btn:hover{ border-color: var(--amber-dim); color: var(--amber); }
+  .chart-controls{ display:flex; gap:6px; flex-wrap:wrap; }
+  #priceChart{ cursor: grab; touch-action: none; }
+  #priceChart.dragging{ cursor: grabbing; }
 
   .chart-card canvas{ width:100%; height: 280px; display:block; }
   .chart-hint{ font-size: 11px; color: #5C6773; }
@@ -201,8 +204,13 @@
 
     <div class="card chart-card">
       <div class="chart-head">
-        <div class="chart-hint mono">縱軸為相對期初漲跌幅（%），非絕對股價</div>
-        <button id="chartModeBtn" class="chart-mode-btn mono">切換為 K線圖</button>
+        <div class="chart-hint mono">縱軸為相對區間期初漲跌幅（%），非絕對股價・滾輪縮放／拖曳平移</div>
+        <div class="chart-controls">
+          <button id="zoomOutBtn" class="chart-mode-btn mono" title="縮小">－</button>
+          <button id="zoomInBtn" class="chart-mode-btn mono" title="放大">＋</button>
+          <button id="zoomResetBtn" class="chart-mode-btn mono">重置縮放</button>
+          <button id="chartModeBtn" class="chart-mode-btn mono">切換為 K線圖</button>
+        </div>
       </div>
       <canvas id="priceChart" width="900" height="280"></canvas>
       <div class="legend">
@@ -325,6 +333,125 @@ document.getElementById('chartModeBtn').addEventListener('click', ()=>{
   document.getElementById('chartModeBtn').textContent = chartMode === 'line' ? '切換為 K線圖' : '切換為 折線圖';
   renderChart();
 });
+
+// 圖表縮放／平移：滾輪縮放（以游標位置為中心）、拖曳平移、按鈕縮放/重置
+(function initChartZoom(){
+  const canvas = document.getElementById('priceChart');
+  const PAD_L = 50, PAD_R = 10; // 需與 renderChart 裡的 padL/padR 一致
+
+  function zoomAt(centerIdx, factor){
+    if(!currentChartData) return;
+    const fullN = currentChartData.closes.length;
+    const { zStart, zEnd } = currentChartData;
+    const curLen = zEnd - zStart;
+    let newLen = Math.round(curLen * factor);
+    newLen = Math.max(9, Math.min(fullN - 1, newLen));
+    const ratio = curLen === 0 ? 0.5 : (centerIdx - zStart) / curLen;
+    let newStart = Math.round(centerIdx - newLen * ratio);
+    let newEnd = newStart + newLen;
+    if(newStart < 0){ newEnd -= newStart; newStart = 0; }
+    if(newEnd > fullN - 1){ newStart -= (newEnd - (fullN - 1)); newEnd = fullN - 1; }
+    newStart = Math.max(0, newStart);
+    currentChartData.zStart = newStart;
+    currentChartData.zEnd = newEnd;
+    renderChart();
+  }
+
+  function idxFromClientX(clientX){
+    const rect = canvas.getBoundingClientRect();
+    const cssX = clientX - rect.left;
+    const plotW = rect.width - PAD_L - PAD_R;
+    const frac = Math.max(0, Math.min(1, (cssX - PAD_L) / plotW));
+    if(!currentChartData) return 0;
+    const { zStart, zEnd } = currentChartData;
+    return Math.round(zStart + frac * (zEnd - zStart));
+  }
+
+  canvas.addEventListener('wheel', (e)=>{
+    if(!currentChartData) return;
+    e.preventDefault();
+    const centerIdx = idxFromClientX(e.clientX);
+    zoomAt(centerIdx, e.deltaY > 0 ? 1.2 : 0.8);
+  }, { passive: false });
+
+  document.getElementById('zoomInBtn').addEventListener('click', ()=>{
+    if(!currentChartData) return;
+    const mid = Math.round((currentChartData.zStart + currentChartData.zEnd) / 2);
+    zoomAt(mid, 0.7);
+  });
+  document.getElementById('zoomOutBtn').addEventListener('click', ()=>{
+    if(!currentChartData) return;
+    const mid = Math.round((currentChartData.zStart + currentChartData.zEnd) / 2);
+    zoomAt(mid, 1.4);
+  });
+  document.getElementById('zoomResetBtn').addEventListener('click', ()=>{
+    if(!currentChartData) return;
+    currentChartData.zStart = 0;
+    currentChartData.zEnd = currentChartData.closes.length - 1;
+    renderChart();
+  });
+
+  let dragging = false;
+  let dragStartX = 0;
+  let dragStartRange = null;
+
+  function panTo(clientX){
+    if(!currentChartData || !dragStartRange) return;
+    const rect = canvas.getBoundingClientRect();
+    const plotW = rect.width - PAD_L - PAD_R;
+    const fullN = currentChartData.closes.length;
+    const len = dragStartRange.zEnd - dragStartRange.zStart;
+    const deltaPx = clientX - dragStartX;
+    const deltaIdx = Math.round(-(deltaPx / plotW) * len);
+    let newStart = dragStartRange.zStart + deltaIdx;
+    let newEnd = dragStartRange.zEnd + deltaIdx;
+    if(newStart < 0){ newEnd -= newStart; newStart = 0; }
+    if(newEnd > fullN - 1){ newStart -= (newEnd - (fullN - 1)); newEnd = fullN - 1; }
+    newStart = Math.max(0, newStart);
+    currentChartData.zStart = newStart;
+    currentChartData.zEnd = newEnd;
+    renderChart();
+  }
+
+  canvas.addEventListener('mousedown', (e)=>{
+    if(!currentChartData) return;
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartRange = { zStart: currentChartData.zStart, zEnd: currentChartData.zEnd };
+    canvas.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (e)=>{
+    if(!dragging) return;
+    panTo(e.clientX);
+  });
+  window.addEventListener('mouseup', ()=>{
+    dragging = false;
+    dragStartRange = null;
+    canvas.classList.remove('dragging');
+  });
+  canvas.addEventListener('dblclick', ()=>{
+    if(!currentChartData) return;
+    currentChartData.zStart = 0;
+    currentChartData.zEnd = currentChartData.closes.length - 1;
+    renderChart();
+  });
+
+  // 觸控：單指拖曳平移
+  canvas.addEventListener('touchstart', (e)=>{
+    if(!currentChartData || e.touches.length !== 1) return;
+    dragging = true;
+    dragStartX = e.touches[0].clientX;
+    dragStartRange = { zStart: currentChartData.zStart, zEnd: currentChartData.zEnd };
+  }, { passive: true });
+  canvas.addEventListener('touchmove', (e)=>{
+    if(!dragging || e.touches.length !== 1) return;
+    panTo(e.touches[0].clientX);
+  }, { passive: true });
+  canvas.addEventListener('touchend', ()=>{
+    dragging = false;
+    dragStartRange = null;
+  });
+})();
 
 const PROXY_KEY = 'stock_analysis_proxy_base';
 const DEFAULT_PROXY_BASE = 'https://stock-proxy.jk181954.workers.dev';
@@ -757,7 +884,7 @@ async function runAnalysis(){
 
   try{
     async function fetchYahooChart(sym){
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1y`;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=2y`;
       const t = await fetchText(url);
       let j;
       try{ j = JSON.parse(t); }catch(e){
@@ -821,7 +948,7 @@ async function runAnalysis(){
     try{
       const bm = BENCHMARKS[market];
       if(bm){
-        const bmUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(bm.symbol)}?interval=1d&range=1y`;
+        const bmUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(bm.symbol)}?interval=1d&range=2y`;
         const bmText = await fetchText(bmUrl);
         const bmJson = JSON.parse(bmText);
         const { rows: bmRows } = parseYahooChart(bmJson);
@@ -972,13 +1099,20 @@ let currentChartData = null;
 let chartMode = 'line';
 
 function drawChart(rows, closes, benchmarkCloses, benchmarkLabel){
-  currentChartData = { rows, closes, benchmarkCloses, benchmarkLabel };
+  currentChartData = { rows, closes, benchmarkCloses, benchmarkLabel, zStart: 0, zEnd: rows.length - 1 };
   renderChart();
 }
 
 function renderChart(){
   if(!currentChartData) return;
   const { rows, closes, benchmarkCloses, benchmarkLabel } = currentChartData;
+  const fullN = closes.length;
+  let { zStart, zEnd } = currentChartData;
+  zStart = Math.max(0, Math.min(zStart, fullN - 2));
+  zEnd = Math.max(zStart + 1, Math.min(zEnd, fullN - 1));
+  currentChartData.zStart = zStart;
+  currentChartData.zEnd = zEnd;
+
   const canvas = document.getElementById('priceChart');
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || 900;
@@ -993,28 +1127,37 @@ function renderChart(){
   const plotW = cssW - padL - padR;
   const plotH = cssH - padT - padB;
 
-  const ma20arr = closes.map((_,i)=> ma(closes,20,i));
-  const ma60arr = closes.map((_,i)=> ma(closes,60,i));
+  // 均線用「全部歷史」計算，避免縮放到後段時 MA20/60 因為前面資料被切掉而失真，
+  // 算完才依縮放範圍切片，只顯示可視區間。
+  const ma20arrFull = closes.map((_,i)=> ma(closes,20,i));
+  const ma60arrFull = closes.map((_,i)=> ma(closes,60,i));
 
-  // 全部換算成「相對期初收盤價的漲跌幅（%）」，個股與均線用同一個基準（closes[0]），
-  // 這是同一個常數縮放，不影響均線交叉判斷的相對關係；大盤指數則用自己的期初值換算，
-  // 這樣個股與大盤才能放在同一張圖比較走勢，不受絕對價位差異影響。
-  const base = closes[0];
+  const rowsView = rows.slice(zStart, zEnd + 1);
+  const closesView = closes.slice(zStart, zEnd + 1);
+  const ma20arr = ma20arrFull.slice(zStart, zEnd + 1);
+  const ma60arr = ma60arrFull.slice(zStart, zEnd + 1);
+  const benchmarkView = benchmarkCloses ? benchmarkCloses.slice(zStart, zEnd + 1) : null;
+
+  // 全部換算成「相對可視區間期初收盤價的漲跌幅（%）」，個股與均線用同一個基準（closesView[0]），
+  // 這是同一個常數縮放，不影響均線交叉判斷的相對關係；大盤指數則用自己在可視區間期初的值換算，
+  // 這樣個股與大盤才能放在同一張圖比較走勢，不受絕對價位差異影響；縮放時也會即時重新基準。
+  const base = closesView[0];
   const toPct = v => v===null || v===undefined ? null : (v/base - 1) * 100;
-  const closesPct = closes.map(toPct);
-  const opensPct = rows.map(r => toPct(r.open));
-  const highsPct = rows.map(r => toPct(r.high));
-  const lowsPct = rows.map(r => toPct(r.low));
+  const closesPct = closesView.map(toPct);
+  const opensPct = rowsView.map(r => toPct(r.open));
+  const highsPct = rowsView.map(r => toPct(r.high));
+  const lowsPct = rowsView.map(r => toPct(r.low));
   const ma20Pct = ma20arr.map(toPct);
   const ma60Pct = ma60arr.map(toPct);
 
   let benchmarkPct = null;
-  if(benchmarkCloses && benchmarkCloses.length === closes.length){
-    const bBase = benchmarkCloses.find(v => v !== null && v !== undefined);
+  if(benchmarkView && benchmarkView.length === closesView.length){
+    const bBase = benchmarkView.find(v => v !== null && v !== undefined);
     if(bBase){
-      benchmarkPct = benchmarkCloses.map(v => v===null||v===undefined ? null : (v/bBase - 1) * 100);
+      benchmarkPct = benchmarkView.map(v => v===null||v===undefined ? null : (v/bBase - 1) * 100);
     }
   }
+
 
   const allVals = closesPct.concat(
     highsPct.filter(v=>v!==null), lowsPct.filter(v=>v!==null),
@@ -1026,7 +1169,7 @@ function renderChart(){
   const vPad = (vMax - vMin) * 0.08 || 1;
   const yMax = vMax + vPad, yMin = vMin - vPad;
 
-  const n = closes.length;
+  const n = closesView.length;
   const x = i => padL + (i/(n-1)) * plotW;
   const y = v => padT + plotH - ((v - yMin)/(yMax - yMin)) * plotH;
 
@@ -1059,7 +1202,7 @@ function renderChart(){
   const tickCount = Math.min(5, n);
   for(let t=0; t<tickCount; t++){
     const idx = Math.round((t/(tickCount-1)) * (n-1));
-    const dateStr = rows[idx].date.slice(2).replace(/-/g,'/'); // YY/MM/DD
+    const dateStr = rowsView[idx].date.slice(2).replace(/-/g,'/'); // YY/MM/DD
     ctx.fillText(dateStr, x(idx), cssH - 6);
   }
 
