@@ -233,18 +233,6 @@
       <div class="stat-grid" id="statGrid"></div>
     </div>
 
-    <div class="card" id="revenueCard" style="display:none;">
-      <div class="brief-title"><span class="tag">營收</span><h2>月營收</h2></div>
-      <div class="stat-grid" id="revenueGrid"></div>
-      <div id="revenueNote" class="fund-note"></div>
-    </div>
-
-    <div class="card" id="chipsCard" style="display:none;">
-      <div class="brief-title"><span class="tag">籌碼面</span><h2>三大法人與資券</h2></div>
-      <div class="stat-grid" id="chipsGrid"></div>
-      <div id="chipsNote" class="fund-note"></div>
-    </div>
-
     <div class="card" id="fundCard" style="display:none;">
       <div class="brief-title"><span class="tag">基本面</span><h2 id="fundTitle">公司基本資料</h2></div>
       <div class="stat-grid" id="fundGrid"></div>
@@ -671,39 +659,6 @@ function parseGenericCSV(text){
   });
 }
 
-// 月營收：TWSE t187ap05_L，僅涵蓋「上市」公司
-async function fetchMonthlyRevenue(code){
-  try{
-    const arr = await fetchJSON('https://openapi.twse.com.tw/v1/opendata/t187ap05_L');
-    if(!Array.isArray(arr)) return null;
-    return arr.find(x => String(pick(x, ['公司代號','Code']) || '') === code) || null;
-  }catch(e){
-    return null;
-  }
-}
-
-// 三大法人買賣超：TWSE T86，僅涵蓋「上市」股票（全市場單日快照）
-async function fetchInstitutional(code){
-  try{
-    const arr = await fetchJSON('https://openapi.twse.com.tw/v1/fund/T86');
-    if(!Array.isArray(arr)) return null;
-    return arr.find(x => String(pick(x, ['證券代號','股票代號','Code']) || '') === code) || null;
-  }catch(e){
-    return null;
-  }
-}
-
-// 融資融券餘額：TWSE MI_MARGN，僅涵蓋「上市」股票（全市場單日快照）
-async function fetchMargin(code){
-  try{
-    const arr = await fetchJSON('https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN');
-    if(!Array.isArray(arr)) return null;
-    return arr.find(x => String(pick(x, ['股票代號','證券代號','Code']) || '') === code) || null;
-  }catch(e){
-    return null;
-  }
-}
-
 async function fetchFundamentals(code, isOTC){
   if(isOTC){
     // 上櫃公司基本資料在 mopsfin.twse.com.tw（CSV格式），
@@ -735,95 +690,6 @@ async function fetchFundamentals(code, isOTC){
   }
 }
 
-function fmtLots(shares){
-  const n = Number(shares);
-  if(isNaN(n)) return '—';
-  const lots = n / 1000;
-  return (lots>=0?'+':'') + lots.toLocaleString(undefined,{maximumFractionDigits:0}) + ' 張';
-}
-
-function renderRevenue(market, isOTC, revenue){
-  const card = document.getElementById('revenueCard');
-  const grid = document.getElementById('revenueGrid');
-  const note = document.getElementById('revenueNote');
-  if(market !== 'TW'){ card.style.display = 'none'; return; }
-  card.style.display = 'block';
-
-  if(isOTC){
-    grid.innerHTML = '';
-    note.textContent = '月營收資料來源目前僅涵蓋證交所「上市」公司，上櫃股票暫不支援。';
-    return;
-  }
-  if(!revenue){
-    grid.innerHTML = '';
-    note.textContent = '目前查無此股號的月營收資料，可能為當月資料尚未申報。';
-    return;
-  }
-  const yearMonth = pick(revenue, ['資料年月']);
-  const curRevenue = pick(revenue, ['營業收入-當月營收','當月營收']);
-  const yoy = pick(revenue, ['營業收入-去年同月增減(%)','去年同月增減(%)']);
-  const mom = pick(revenue, ['營業收入-上月比較增減(%)','上月比較增減(%)']);
-
-  const items = [];
-  if(yearMonth) items.push({ label:'資料年月', value: yearMonth });
-  if(curRevenue) items.push({ label:'當月營收', value: fmtCapital(curRevenue) });
-  if(yoy !== null) items.push({ label:'年增率 YoY', value: (Number(yoy)>=0?'+':'') + yoy + '%', cls: Number(yoy)>=0?'up':'down' });
-  if(mom !== null) items.push({ label:'月增率 MoM', value: (Number(mom)>=0?'+':'') + mom + '%', cls: Number(mom)>=0?'up':'down' });
-
-  grid.innerHTML = items.length ? items.map(it=>`
-    <div class="stat">
-      <div class="label">${it.label}</div>
-      <div class="value mono ${it.cls||''}">${it.value}</div>
-    </div>`).join('') : '';
-  note.textContent = items.length
-    ? '資料來源：證交所 OpenAPI（公司申報之月營收，非即時股價相關數據）。'
-    : '查無完整月營收欄位。';
-}
-
-function renderChips(market, isOTC, inst, margin){
-  const card = document.getElementById('chipsCard');
-  const grid = document.getElementById('chipsGrid');
-  const note = document.getElementById('chipsNote');
-  if(market !== 'TW'){ card.style.display = 'none'; return; }
-  card.style.display = 'block';
-
-  if(isOTC){
-    grid.innerHTML = '';
-    note.textContent = '三大法人與資券資料來源目前僅涵蓋證交所「上市」股票，上櫃股票的對應來源對程式化查詢有防護機制，暫不支援。';
-    return;
-  }
-
-  const items = [];
-  if(inst){
-    const total = pick(inst, ['三大法人買賣超股數']);
-    const trust = pick(inst, ['投信買賣超股數']);
-    const foreignA = pick(inst, ['外陸資買賣超股數(不含外資自營商)']);
-    const foreignB = pick(inst, ['外資自營商買賣超股數']);
-    const dealerA = pick(inst, ['自營商買賣超股數(自行買賣)']);
-    const dealerB = pick(inst, ['自營商買賣超股數(避險)']);
-    const foreign = (foreignA !== null || foreignB !== null) ? (Number(foreignA||0) + Number(foreignB||0)) : pick(inst, ['外資買賣超股數']);
-    const dealer = (dealerA !== null || dealerB !== null) ? (Number(dealerA||0) + Number(dealerB||0)) : pick(inst, ['自營商買賣超股數']);
-    if(total !== null) items.push({ label:'三大法人合計', value: fmtLots(total), cls: Number(total)>=0?'up':'down' });
-    if(foreign !== null && foreign !== undefined) items.push({ label:'外資買賣超', value: fmtLots(foreign), cls: Number(foreign)>=0?'up':'down' });
-    if(trust !== null) items.push({ label:'投信買賣超', value: fmtLots(trust), cls: Number(trust)>=0?'up':'down' });
-    if(dealer !== null && dealer !== undefined) items.push({ label:'自營商買賣超', value: fmtLots(dealer), cls: Number(dealer)>=0?'up':'down' });
-  }
-  if(margin){
-    const marginBal = pick(margin, ['融資今日餘額','融資餘額']);
-    const shortBal = pick(margin, ['融券今日餘額','融券餘額']);
-    if(marginBal !== null) items.push({ label:'融資餘額', value: Number(marginBal).toLocaleString() + ' 張' });
-    if(shortBal !== null) items.push({ label:'融券餘額', value: Number(shortBal).toLocaleString() + ' 張' });
-  }
-
-  grid.innerHTML = items.length ? items.map(it=>`
-    <div class="stat">
-      <div class="label">${it.label}</div>
-      <div class="value mono ${it.cls||''}">${it.value}</div>
-    </div>`).join('') : '';
-  note.textContent = items.length
-    ? '資料來源：證交所 OpenAPI（最近一個交易日全市場快照）。買賣超單位換算為「張」（1張=1,000股）。'
-    : '目前查無此股號的籌碼資料，可能為當日尚未更新或代號有誤。';
-}
 
 function renderFundamentals(market, profile, val, isOTC){
   const card = document.getElementById('fundCard');
@@ -993,20 +859,6 @@ async function runAnalysis(){
       document.getElementById('stockName').textContent = companyName + '（台股）';
     }
     renderFundamentals(market, fund.profile, fund.val, isOTC);
-
-    if(market === 'TW' && !isOTC){
-      setStatus('讀取營收與籌碼資料中 · ' + actualSymbol.toUpperCase());
-      const [revenue, inst, margin] = await Promise.all([
-        fetchMonthlyRevenue(display),
-        fetchInstitutional(display),
-        fetchMargin(display),
-      ]);
-      renderRevenue(market, isOTC, revenue);
-      renderChips(market, isOTC, inst, margin);
-    } else {
-      renderRevenue(market, isOTC, null);
-      renderChips(market, isOTC, null, null);
-    }
 
     const pe = pick(fund.val, ['PEratio','PeRatio','本益比']);
     const dy = pick(fund.val, ['DividendYield','殖利率(%)','殖利率']);
